@@ -20,6 +20,7 @@ import sys
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from aria import __version__
@@ -78,6 +79,11 @@ def run() -> None:
         )
         raise typer.Exit(code=1)
 
+    # Initialise memory system
+    from aria.memory import MemoryManager
+
+    memory = MemoryManager(settings.aria, client)
+
     # Show banner
     console.print(_BANNER, style="bold cyan")
     console.print(
@@ -87,12 +93,13 @@ def run() -> None:
     )
     console.print(
         '  Type your message and press Enter. '
-        'Type [bold]"quit"[/bold] or [bold]"exit"[/bold] to leave.\n',
+        'Type [bold]"quit"[/bold] or [bold]"exit"[/bold] to leave.\n'
+        '  Special commands: [bold]stats[/bold]  [bold]new session[/bold]\n',
     )
 
     # Run the async REPL
     try:
-        asyncio.run(_repl(client))
+        asyncio.run(_repl(client, memory))
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Goodbye! 👋[/bold yellow]")
 
@@ -159,16 +166,18 @@ def version() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _repl(client: OllamaClient) -> None:
-    """Run the interactive read-eval-print loop.
+async def _repl(client: OllamaClient, memory: "MemoryManager") -> None:
+    """Run the interactive read-eval-print loop with memory integration.
 
-    Accepts user input, sends it to Ollama, and prints the response.
+    Accepts user input, retrieves relevant memory, sends the context
+    to Ollama, prints the response, and stores the conversation turn.
     Exits on ``quit``, ``exit``, or ``Ctrl+C``.
 
     Args:
         client: An initialised OllamaClient instance.
+        memory: An initialised MemoryManager instance.
     """
-    messages: list[dict[str, str]] = []
+    from aria.memory import MemoryManager  # noqa: F811
 
     try:
         while True:
@@ -185,22 +194,88 @@ async def _repl(client: OllamaClient) -> None:
                 console.print("[bold yellow]Goodbye! 👋[/bold yellow]")
                 break
 
-            messages.append({"role": "user", "content": stripped})
+            # --- Handle special REPL commands ---
+            if stripped.lower() == "stats":
+                _print_stats(memory)
+                continue
+            if stripped.lower() == "new session":
+                new_id = memory.new_session()
+                console.print(
+                    f"[bold green]New session started:[/bold green] {new_id}\n"
+                )
+                continue
 
-            # Show a thinking indicator
+            # --- Memory-augmented chat ---
             with console.status("[bold cyan]ARIA thinking…[/bold cyan]", spinner="dots"):
                 try:
-                    reply = await client.chat(messages, system=ARIA_CHAT_PROMPT)
+                    # Retrieve relevant memory for this query
+                    memory_context = await memory.recall_for_prompt(stripped)
+
+                    # Build system prompt with memory
+                    system_prompt = ARIA_CHAT_PROMPT
+                    if memory_context:
+                        system_prompt = f"{ARIA_CHAT_PROMPT}\n\n{memory_context}"
+
+                    # Get conversation history from context
+                    messages = memory.get_context_for_llm(last_n=10)
+                    messages.append({"role": "user", "content": stripped})
+
+                    reply = await client.chat(messages, system=system_prompt)
                 except Exception as exc:
                     log.error("Chat request failed", data={"error": str(exc)})
                     console.print(f"[bold red]Error:[/bold red] {exc}")
-                    messages.pop()  # remove the failed user message
                     continue
 
-            messages.append({"role": "assistant", "content": reply})
             console.print(f"\n[bold green]ARIA ❯[/bold green] {reply}\n")
+
+            # Store the conversation turn in memory
+            try:
+                await memory.store_conversation_turn(stripped, reply)
+            except Exception as exc:
+                log.warning("Failed to store conversation", data={"error": str(exc)})
+
     finally:
+        # Save knowledge graph on exit
+        try:
+            memory.knowledge.save()
+        except Exception:
+            pass
         await client.close()
+
+
+def _print_stats(memory: "MemoryManager") -> None:
+    """Print memory system statistics as a Rich table.
+
+    Args:
+        memory: The MemoryManager instance.
+    """
+    from aria.memory import MemoryManager  # noqa: F811
+
+    stats = memory.stats()
+
+    table = Table(title="ARIA Memory Stats", border_style="cyan")
+    table.add_column("Component", style="bold")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    # Vector store
+    vs = stats.get("vector_store", {})
+    for coll, count in vs.items():
+        table.add_row("Vector Store", f"{coll}", str(count))
+
+    # Knowledge graph
+    kg = stats.get("knowledge_graph", {})
+    table.add_row("Knowledge Graph", "entities", str(kg.get("entities", 0)))
+    table.add_row("Knowledge Graph", "relations", str(kg.get("relations", 0)))
+
+    # Context
+    ctx = stats.get("context", {})
+    table.add_row("Session", "messages", str(ctx.get("message_count", 0)))
+    table.add_row("Session", "duration (s)", str(ctx.get("duration_seconds", 0)))
+    table.add_row("Session", "session_id", ctx.get("session_id", "")[:12] + "…")
+
+    console.print(table)
+    console.print()
 
 
 # ---------------------------------------------------------------------------
