@@ -84,12 +84,21 @@ def run() -> None:
 
     memory = MemoryManager(settings.aria, client)
 
+    # Initialise cognitive layer
+    from aria.capabilities import GLOBAL_REGISTRY
+    from aria.cognitive import IntentParser, PromptBuilder, Router
+
+    intent_parser = IntentParser(settings.aria, client, memory)
+    router = Router(settings.aria, client, GLOBAL_REGISTRY, memory)
+    prompt_builder = PromptBuilder(settings.aria, memory, GLOBAL_REGISTRY)
+
     # Show banner
     console.print(_BANNER, style="bold cyan")
     console.print(
         f"  [bold green]v{settings.aria.version}[/bold green]  •  "
         f"model: [bold]{settings.llm.model}[/bold]  •  "
-        f"provider: [bold]{settings.llm.provider}[/bold]\n"
+        f"provider: [bold]{settings.llm.provider}[/bold]  •  "
+        f"capabilities: [bold]{len(GLOBAL_REGISTRY)}[/bold]\n"
     )
     console.print(
         '  Type your message and press Enter. '
@@ -99,7 +108,7 @@ def run() -> None:
 
     # Run the async REPL
     try:
-        asyncio.run(_repl(client, memory))
+        asyncio.run(_repl(client, memory, intent_parser, router, prompt_builder))
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Goodbye! 👋[/bold yellow]")
 
@@ -140,6 +149,17 @@ def check() -> None:
         f"[bold]{settings.llm.model}[/bold]"
     )
 
+    # --- Capabilities ---
+    from aria.capabilities import GLOBAL_REGISTRY
+
+    console.print(
+        f"  [green]✔[/green]  Capabilities loaded: "
+        f"[bold]{len(GLOBAL_REGISTRY)}[/bold]"
+    )
+
+    # --- Cognitive layer ---
+    console.print("  [green]✔[/green]  Cognitive layer (IntentParser + Router)")
+
     console.print()
     console.print("[bold green]All checks passed![/bold green] 🎉")
 
@@ -166,18 +186,29 @@ def version() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _repl(client: OllamaClient, memory: "MemoryManager") -> None:
-    """Run the interactive read-eval-print loop with memory integration.
+async def _repl(
+    client: OllamaClient,
+    memory: "MemoryManager",
+    intent_parser: "IntentParser",
+    router: "Router",
+    prompt_builder: "PromptBuilder",
+) -> None:
+    """Run the interactive REPL with cognitive routing.
 
-    Accepts user input, retrieves relevant memory, sends the context
-    to Ollama, prints the response, and stores the conversation turn.
-    Exits on ``quit``, ``exit``, or ``Ctrl+C``.
+    For each user input:
+        1. Parse intent (fast rules → LLM fallback).
+        2. Route to capability (rules → semantic → LLM).
+        3. Execute capability or handle as conversation.
+        4. Store the conversation turn in memory.
 
     Args:
         client: An initialised OllamaClient instance.
         memory: An initialised MemoryManager instance.
+        intent_parser: The IntentParser.
+        router: The Router.
+        prompt_builder: The PromptBuilder.
     """
-    from aria.memory import MemoryManager  # noqa: F811
+    from aria.capabilities import GLOBAL_REGISTRY
 
     try:
         while True:
@@ -205,30 +236,101 @@ async def _repl(client: OllamaClient, memory: "MemoryManager") -> None:
                 )
                 continue
 
-            # --- Memory-augmented chat ---
+            # --- Cognitive pipeline ---
+            reply = ""
             with console.status("[bold cyan]ARIA thinking…[/bold cyan]", spinner="dots"):
                 try:
-                    # Retrieve relevant memory for this query
-                    memory_context = await memory.recall_for_prompt(stripped)
+                    # Step 1: Parse intent
+                    intent = await intent_parser.parse(stripped)
 
-                    # Build system prompt with memory
-                    system_prompt = ARIA_CHAT_PROMPT
-                    if memory_context:
-                        system_prompt = f"{ARIA_CHAT_PROMPT}\n\n{memory_context}"
+                    # Step 2: Route to capability
+                    result = await router.route(intent)
 
-                    # Get conversation history from context
-                    messages = memory.get_context_for_llm(last_n=10)
-                    messages.append({"role": "user", "content": stripped})
+                    # Log the decision
+                    console.print(
+                        f"  [dim][Intent]  action={intent.action} "
+                        f"type={intent.intent_type} "
+                        f"conf={intent.confidence:.2f}[/dim]"
+                    )
+                    console.print(
+                        f"  [dim][Router]  capability={result.capability_name} "
+                        f"method={result.routing_method} "
+                        f"conf={result.confidence:.2f}[/dim]"
+                    )
 
-                    reply = await client.chat(messages, system=system_prompt)
                 except Exception as exc:
-                    log.error("Chat request failed", data={"error": str(exc)})
+                    log.error("Cognitive pipeline failed", data={"error": str(exc)})
                     console.print(f"[bold red]Error:[/bold red] {exc}")
                     continue
 
+            # --- Step 3: Execute or chat ---
+            try:
+                if result.routing_method == "memory":
+                    # Handle memory operations
+                    if intent.action == "remember":
+                        await memory.remember(stripped)
+                        reply = "Got it, I'll remember that."
+                    elif intent.action == "recall":
+                        recall_result = await memory.recall(stripped)
+                        reply = recall_result.formatted_summary
+                    else:
+                        reply = "Memory operation noted."
+
+                elif result.capability_name:
+                    # Execute the capability
+                    with console.status(
+                        f"[bold cyan]Running {result.capability_name}…[/bold cyan]",
+                        spinner="dots",
+                    ):
+                        cap_output = await GLOBAL_REGISTRY.execute(
+                            result.capability_name, result.parameters
+                        )
+
+                    if cap_output.success:
+                        # Format capability output
+                        data = cap_output.data
+                        if isinstance(data, dict):
+                            # Pretty-print dict results
+                            lines = []
+                            for k, v in data.items():
+                                val_str = str(v)
+                                if len(val_str) > 500:
+                                    val_str = val_str[:500] + "…"
+                                lines.append(f"  {k}: {val_str}")
+                            reply = "\n".join(lines)
+                        elif isinstance(data, str):
+                            reply = data if len(data) < 2000 else data[:2000] + "…"
+                        else:
+                            reply = str(data)
+
+                        reply = (
+                            f"[{result.capability_name}] "
+                            f"✓ ({cap_output.execution_time_ms:.0f}ms)\n{reply}"
+                        )
+                    else:
+                        reply = (
+                            f"[{result.capability_name}] "
+                            f"✗ Error: {cap_output.error}"
+                        )
+                else:
+                    # Conversation: use LLM with memory context
+                    with console.status(
+                        "[bold cyan]ARIA thinking…[/bold cyan]", spinner="dots"
+                    ):
+                        system_prompt = await prompt_builder.build_chat_prompt(
+                            stripped, include_memory=True
+                        )
+                        messages = memory.get_context_for_llm(last_n=10)
+                        messages.append({"role": "user", "content": stripped})
+                        reply = await client.chat(messages, system=system_prompt)
+
+            except Exception as exc:
+                log.error("Execution failed", data={"error": str(exc)})
+                reply = f"Error during execution: {exc}"
+
             console.print(f"\n[bold green]ARIA ❯[/bold green] {reply}\n")
 
-            # Store the conversation turn in memory
+            # --- Step 4: Store conversation turn ---
             try:
                 await memory.store_conversation_turn(stripped, reply)
             except Exception as exc:
@@ -243,14 +345,17 @@ async def _repl(client: OllamaClient, memory: "MemoryManager") -> None:
         await client.close()
 
 
+# ---------------------------------------------------------------------------
+# Stats display
+# ---------------------------------------------------------------------------
+
+
 def _print_stats(memory: "MemoryManager") -> None:
     """Print memory system statistics as a Rich table.
 
     Args:
         memory: The MemoryManager instance.
     """
-    from aria.memory import MemoryManager  # noqa: F811
-
     stats = memory.stats()
 
     table = Table(title="ARIA Memory Stats", border_style="cyan")
