@@ -1,0 +1,32 @@
+# aria.yaml — ARIA configuration file
+# Place in project root or ~/.aria/aria.yaml
+
+llm:
+  provider: ollama
+  model: llama3
+  base_url: http://localhost:11434
+  temperature: 0.2
+  max_tokens: 4096
+  timeout: 60
+
+aria:
+  name: ARIA
+  version: 0.1.0
+  log_level: INFO
+  log_format: json        # json | pretty
+  data_dir: ~/.aria/data
+  memory_dir: ~/.aria/memory
+
+interfaces:
+  cli: true
+  voice: false
+  api: false
+  desktop: false
+
+integrations:
+  google_drive:
+    enabled: false
+    credentials_path: ~/.aria/google_credentials.json
+  telegram:
+    enabled: false
+    bot_token: ""
