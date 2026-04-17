@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -28,6 +29,11 @@ from aria.config import get_settings, load_settings
 from aria.core.logger import get_logger, setup_logging
 from aria.llm.client import OllamaClient
 from aria.llm.prompts import ARIA_CHAT_PROMPT
+
+if TYPE_CHECKING:
+    from aria.config import Settings
+    from aria.cognitive import IntentParser, PromptBuilder, Router
+    from aria.memory import MemoryManager
 
 # ---------------------------------------------------------------------------
 # Typer app
@@ -388,14 +394,12 @@ def _print_stats(memory: "MemoryManager") -> None:
 # ---------------------------------------------------------------------------
 
 
-def _init() -> "aria.config.Settings":  # noqa: F821
+def _init() -> "Settings":
     """Load settings and configure logging.
 
     Returns:
         The validated Settings object.
     """
-    from aria.config import Settings  # noqa: F811 — used for type only
-
     settings = get_settings()
     setup_logging(
         level=settings.aria.log_level,
