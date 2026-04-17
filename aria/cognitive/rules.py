@@ -98,11 +98,59 @@ def _extract_write_file(match: re.Match, user_input: str, intent: Intent) -> dic
     return {"path": path, "content": ""}
 
 
+def _extract_create_dir(match: re.Match, user_input: str, intent: Intent) -> dict:
+    """Extract path for create_directory from flexible patterns.
+
+    Handles:
+        - 'mkdir /tmp/test' → group 2
+        - 'create folder myproject' → group 3
+        - 'create a folder called myproject' → group 3
+    """
+    # Try group 3 first (natural language: "create folder X")
+    if match.lastindex and match.lastindex >= 3 and match.group(3):
+        return {"path": match.group(3).strip()}
+    # Then group 2 (direct: "mkdir /tmp/test")
+    if match.lastindex and match.lastindex >= 2 and match.group(2):
+        return {"path": match.group(2).strip()}
+    return {"path": "."}
+
+
+def _extract_search_files(match: re.Match, user_input: str, intent: Intent) -> dict:
+    """Extract pattern and optional directory for file search."""
+    pattern = match.group(2).strip() if match.lastindex and match.lastindex >= 2 else "*"
+    # Check if group 3 has a directory
+    directory = "."
+    if match.lastindex and match.lastindex >= 3 and match.group(3):
+        directory = match.group(3).strip()
+    return {"pattern": pattern, "directory": directory}
+
+
+def _extract_move_file(match: re.Match, user_input: str, intent: Intent) -> dict:
+    """Extract source and destination from move/rename commands."""
+    source = match.group(2).strip() if match.lastindex and match.lastindex >= 2 else ""
+    dest = match.group(3).strip() if match.lastindex and match.lastindex >= 3 else ""
+    return {"source": source, "destination": dest, "confirm": True}
+
+
+def _extract_copy_file(match: re.Match, user_input: str, intent: Intent) -> dict:
+    """Extract source and destination from copy commands."""
+    source = match.group(2).strip() if match.lastindex and match.lastindex >= 2 else ""
+    dest = match.group(3).strip() if match.lastindex and match.lastindex >= 3 else ""
+    return {"source": source, "destination": dest}
+
+
+def _extract_delete_path(match: re.Match, user_input: str, intent: Intent) -> dict:
+    """Extract path for delete, with confirm=True."""
+    path = match.group(2).strip() if match.lastindex and match.lastindex >= 2 else ""
+    return {"path": path, "confirm": True}
+
+
 # ---------------------------------------------------------------------------
 # Built-in rules
 # ---------------------------------------------------------------------------
 
 BUILTIN_RULES: List[RoutingRule] = [
+    # ── File operations ───────────────────────────────────────
     RoutingRule(
         name="read_file_direct",
         pattern=re.compile(
@@ -126,6 +174,66 @@ BUILTIN_RULES: List[RoutingRule] = [
         description="Direct file write: 'write /path/to/file'",
     ),
     RoutingRule(
+        name="delete_file_direct",
+        pattern=re.compile(
+            r"^(delete|remove|rm)\s+(?:file\s+)?([~/.][\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="delete_file",
+        parameter_extractor=_extract_delete_path,
+        priority=95,
+        description="Delete a file: 'delete /path/to/file'",
+    ),
+    RoutingRule(
+        name="move_file_direct",
+        pattern=re.compile(
+            r"^(move|mv|rename)\s+([~/.][\S]+)\s+(?:to\s+)?([~/.][\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="move_file",
+        parameter_extractor=_extract_move_file,
+        priority=95,
+        description="Move/rename: 'move /a.txt to /b.txt'",
+    ),
+    RoutingRule(
+        name="copy_file_direct",
+        pattern=re.compile(
+            r"^(copy|cp)\s+([~/.][\S]+)\s+(?:to\s+)?([~/.][\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="copy_file",
+        parameter_extractor=_extract_copy_file,
+        priority=95,
+        description="Copy: 'copy /a.txt to /b.txt'",
+    ),
+    RoutingRule(
+        name="file_info_direct",
+        pattern=re.compile(
+            r"^(file info|info|stat|file size)\s+([~/.][\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="file_info",
+        parameter_extractor=_extract_path,
+        priority=90,
+        description="File metadata: 'file info /path/to/file'",
+    ),
+    RoutingRule(
+        name="search_files_direct",
+        pattern=re.compile(
+            r"^(?:search|find|look for)\s+(?:files?\s+)?([*\w.]+)(?:\s+in\s+([~/.][\S]+))?",
+            re.IGNORECASE,
+        ),
+        capability_name="search_files",
+        parameter_extractor=lambda m, u, i: {
+            "pattern": m.group(1).strip(),
+            "directory": m.group(2).strip() if m.lastindex and m.lastindex >= 2 and m.group(2) else ".",
+        },
+        priority=90,
+        description="Search files: 'search *.py in ./src'",
+    ),
+
+    # ── Folder operations ─────────────────────────────────────
+    RoutingRule(
         name="list_directory_direct",
         pattern=re.compile(
             r"^(ls|list|dir)\s*([~/.][\S]*)?",
@@ -134,8 +242,54 @@ BUILTIN_RULES: List[RoutingRule] = [
         capability_name="list_directory",
         parameter_extractor=_extract_path_or_dot,
         priority=100,
-        description="Direct directory listing: 'ls /path' or 'ls'",
+        description="Directory listing: 'ls /path' or 'ls'",
     ),
+    RoutingRule(
+        name="create_directory_direct",
+        pattern=re.compile(
+            r"^(mkdir|make dir|make directory)\s+([~/.]?[\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="create_directory",
+        parameter_extractor=_extract_path,
+        priority=100,
+        description="Create directory (short): 'mkdir /tmp/test'",
+    ),
+    RoutingRule(
+        name="create_folder_natural",
+        pattern=re.compile(
+            r"^(?:create|make|new)\s+(?:a\s+)?(?:folder|directory|dir)\s+(?:called\s+|named\s+|at\s+)?([~/.]?[\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="create_directory",
+        parameter_extractor=lambda m, u, i: {"path": m.group(1).strip()},
+        priority=98,
+        description="Create directory (natural): 'create a folder called myproject'",
+    ),
+    RoutingRule(
+        name="delete_directory_direct",
+        pattern=re.compile(
+            r"^(?:delete|remove|rm|rmdir)\s+(?:folder|directory|dir)\s+([~/.]?[\S]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="delete_directory",
+        parameter_extractor=lambda m, u, i: {"path": m.group(1).strip(), "confirm": True},
+        priority=95,
+        description="Delete directory: 'delete folder /tmp/test'",
+    ),
+    RoutingRule(
+        name="folder_tree_direct",
+        pattern=re.compile(
+            r"^(tree|show tree|folder structure)\s*([~/.][\S]*)?",
+            re.IGNORECASE,
+        ),
+        capability_name="folder_tree",
+        parameter_extractor=_extract_path_or_dot,
+        priority=85,
+        description="Show directory tree: 'tree /path'",
+    ),
+
+    # ── Execution ─────────────────────────────────────────────
     RoutingRule(
         name="run_python_direct",
         pattern=re.compile(
@@ -158,6 +312,8 @@ BUILTIN_RULES: List[RoutingRule] = [
         priority=90,
         description="Direct shell command: 'run: ls -la'",
     ),
+
+    # ── External ──────────────────────────────────────────────
     RoutingRule(
         name="fetch_url_direct",
         pattern=re.compile(
@@ -190,17 +346,6 @@ BUILTIN_RULES: List[RoutingRule] = [
         parameter_extractor=_extract_nothing,
         priority=80,
         description="Get current time/date",
-    ),
-    RoutingRule(
-        name="folder_tree_direct",
-        pattern=re.compile(
-            r"^(tree|show tree|folder structure)\s*([~/.][\S]*)?",
-            re.IGNORECASE,
-        ),
-        capability_name="folder_tree",
-        parameter_extractor=_extract_path_or_dot,
-        priority=85,
-        description="Show directory tree: 'tree /path'",
     ),
 ]
 
