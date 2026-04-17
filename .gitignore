@@ -41,3 +41,4 @@ htmlcov/
 *.log
 *.bak
 *.tmp
+.aria_context.md
