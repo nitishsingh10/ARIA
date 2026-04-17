@@ -3,7 +3,7 @@
 
 llm:
   provider: ollama
-  model: llama3
+  model: gemma4:latest
   base_url: http://localhost:11434
   temperature: 0.2
   max_tokens: 4096

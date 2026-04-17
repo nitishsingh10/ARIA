@@ -64,7 +64,6 @@ _ACTION_KEYWORDS: List[tuple] = [
     (("delete ", "remove ", "rm "), "delete", "capability", 0.80),
     (("move ", "mv ", "rename "), "move", "capability", 0.80),
     (("remember ", "note that ", "save that "), "remember", "memory", 0.90),
-    (("what do you know", "recall ", "do you remember"), "recall", "memory", 0.90),
     (("what is ", "explain ", "how does ", "how do ", "why "), "explain", "conversation", 0.75),
     (("summarize ", "summarise ", "tldr "), "summarize", "capability", 0.80),
     (("create ", "make ", "mkdir "), "create", "capability", 0.80),
@@ -78,6 +77,19 @@ _TIME_PATTERNS = re.compile(
 )
 _SYSINFO_PATTERNS = re.compile(
     r"(?:system info|sysinfo|hardware info|memory usage|disk usage|cpu info)",
+    re.IGNORECASE,
+)
+
+# Recall patterns — must be checked BEFORE remember keywords
+# These catch questions about what ARIA knows/remembers.
+_RECALL_PATTERNS = re.compile(
+    r"(?:"
+    r"what (?:do you |all do you |can you )?(?:know|remember|recall)"
+    r"|do you (?:remember|recall|know)"
+    r"|tell me (?:what you know|about me)"
+    r"|what(?:'?s| is) my (?:name|project|preference)"
+    r"|^recall\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -238,6 +250,13 @@ class IntentParser:
                 intent.confidence = 0.75
                 intent.parameters["url"] = url_match.group(0)
                 return intent
+
+        # --- Recall patterns (before keywords to beat "remember" prefix) ---
+        if _RECALL_PATTERNS.search(text):
+            intent.action = "recall"
+            intent.intent_type = "memory"
+            intent.confidence = 0.90
+            return intent
 
         # --- Time patterns ---
         if _TIME_PATTERNS.search(text):
