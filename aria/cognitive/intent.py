@@ -179,25 +179,38 @@ class IntentParser:
         )
 
         if fast.confidence >= 0.7:
-            return fast
+            final_intent = fast
+        else:
+            # LLM fallback
+            try:
+                llm_intent = await self.llm_parse(user_input, fast)
+                # Merge: prefer LLM action if it has higher confidence,
+                # but keep fast-parsed entities if LLM didn't find any
+                if not llm_intent.entities and fast.entities:
+                    llm_intent.entities = fast.entities
+                if not llm_intent.parameters and fast.parameters:
+                    llm_intent.parameters = fast.parameters
+                final_intent = llm_intent
+            except Exception as exc:
+                log.warning(
+                    "LLM parse failed, using fast parse",
+                    data={"error": str(exc)},
+                )
+                fast.confidence = max(fast.confidence, 0.5)
+                final_intent = fast
 
-        # LLM fallback
-        try:
-            llm_intent = await self.llm_parse(user_input, fast)
-            # Merge: prefer LLM action if it has higher confidence,
-            # but keep fast-parsed entities if LLM didn't find any
-            if not llm_intent.entities and fast.entities:
-                llm_intent.entities = fast.entities
-            if not llm_intent.parameters and fast.parameters:
-                llm_intent.parameters = fast.parameters
-            return llm_intent
-        except Exception as exc:
-            log.warning(
-                "LLM parse failed, using fast parse",
-                data={"error": str(exc)},
-            )
-            fast.confidence = max(fast.confidence, 0.5)
-            return fast
+        # --- Enforce requires_planning constraints ---
+        text_lower = final_intent.raw_text.lower()
+        complex_kws = ["and then", "after that", "then", "also", "finally", 
+                       "analyze and fix", "fetch and save", "read and summarize"]
+        
+        # Default to false for single operations / memory / chat
+        final_intent.requires_planning = False
+        
+        if final_intent.complexity == "complex" or any(kw in text_lower for kw in complex_kws):
+            final_intent.requires_planning = True
+            
+        return final_intent
 
     # ------------------------------------------------------------------
     # Fast parse (rule-based, <1ms)
@@ -223,6 +236,62 @@ class IntentParser:
 
         # --- Extract entities first ---
         intent.entities = self._extract_entities(text)
+        
+        # --- Natural Language Parsing (Problem 1) ---
+        import re
+        
+        # Extract CWD from 'in {directory}' etc.
+        cwd_match = re.search(r'(?:in|inside)\s+(?:the\s+)?([\'"]?[\w./~-]+[\'"]?)(?:\s+directory)?|in\s+the\s+current\s+directory', text, re.IGNORECASE)
+        if cwd_match:
+            if cwd_match.group(0).lower().endswith("current directory"):
+                intent.parameters["cwd"] = "."
+            elif cwd_match.group(1):
+                intent.parameters["cwd"] = cwd_match.group(1).strip("'\"")
+
+        # "named {X}" / "called {X}" / "name {X}"
+        name_match = re.search(r'(?:named|called|name)\s+([\'"]?[\w./~-]+[\'"]?)', text, re.IGNORECASE)
+        if name_match:
+            n_val = name_match.group(1).strip("'\"")
+            if n_val not in intent.entities:
+                intent.entities.append(n_val)
+            intent.parameters["name"] = n_val
+
+        # "create a file named {X} with content {Y}"
+        file_content_match = re.search(r'(?:create|make)\s+a\s+(?:text\s+)?file\s+(?:named|called)\s+([\'"]?[\w./~-]+[\'"]?)\s+(?:with\s+content|containing)\s+(.*)', text, re.IGNORECASE)
+        write_to_match = re.search(r'write\s+([\'"]?.+?[\'"]?)\s+to\s+([\'"]?[\w./~-]+[\'"]?)', text, re.IGNORECASE)
+        if file_content_match:
+            intent.action = "write"
+            intent.intent_type = "capability"
+            intent.confidence = 0.95
+            intent.parameters["path"] = file_content_match.group(1).strip("'\"")
+            intent.parameters["content"] = file_content_match.group(2).strip("'\"")
+            return intent
+        elif write_to_match:
+            intent.action = "write"
+            intent.intent_type = "capability"
+            intent.confidence = 0.95
+            intent.parameters["path"] = write_to_match.group(2).strip("'\"")
+            intent.parameters["content"] = write_to_match.group(1).strip("'\"")
+            return intent
+
+        # "create a file named {X}"
+        file_match = re.search(r'(?:create|make)\s+a\s+(?:text\s+)?file\s+(?:named|called)\s+([\'"]?[\w./~-]+[\'"]?)', text, re.IGNORECASE)
+        if file_match:
+            intent.action = "write"
+            intent.intent_type = "capability"
+            intent.confidence = 0.95
+            intent.parameters["path"] = file_match.group(1).strip("'\"")
+            intent.parameters["content"] = ""
+            return intent
+
+        # "create a folder named {X}"
+        dir_match = re.search(r'(?:create\s+a\s+folder\s+(?:named|called)|make\s+a\s+directory\s+(?:called|named)|mkdir)\s+([\'"]?[\w./~-]+[\'"]?)', text, re.IGNORECASE)
+        if dir_match:
+            intent.action = "create"
+            intent.intent_type = "capability"
+            intent.confidence = 0.95
+            intent.parameters["path"] = dir_match.group(1).strip("'\"")
+            return intent
 
         # --- Check for code blocks ---
         code_match = _RE_CODE_BLOCK.search(text)

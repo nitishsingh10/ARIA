@@ -150,6 +150,49 @@ def _extract_delete_path(match: re.Match, user_input: str, intent: Intent) -> di
 # ---------------------------------------------------------------------------
 
 BUILTIN_RULES: List[RoutingRule] = [
+    # ── Natural Language Operation Rules ──────────────────────
+    RoutingRule(
+        name="write_file_with_content",
+        pattern=re.compile(
+            r"(?:create a (?:text )?file (?:named|called) ([\w./~-]+) (?:which contains|containing|with content|with a line about|that says) (.+))|(?:write [\"'](.+)[\"'] to ([\w./~-]+))",
+            re.IGNORECASE,
+        ),
+        capability_name="write_file",
+        parameter_extractor=lambda m, u, i: {
+            "path": m.group(1) if m.group(1) else m.group(4),
+            "content": m.group(2) if m.group(2) else m.group(3),
+        },
+        priority=115,
+        description="Natural language write to file with content",
+    ),
+    RoutingRule(
+        name="write_file_natural",
+        pattern=re.compile(
+            r"(?:create|make) a (?:text )?file (?:named|called) ([\w./~-]+)|write (?:a file|file) (?:named|called) ([\w./~-]+)|save (?:a file|file) (?:named|called|as) ([\w./~-]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="write_file",
+        parameter_extractor=lambda m, u, i: {
+            "path": m.group(1) or m.group(2) or m.group(3),
+            "content": "",
+        },
+        priority=110,
+        description="Natural language file creation",
+    ),
+    RoutingRule(
+        name="create_directory_natural",
+        pattern=re.compile(
+            r"(?:create a folder|make a folder|make a directory) (?:named|called) ([\w./~-]+)|mkdir ([\w./~-]+)",
+            re.IGNORECASE,
+        ),
+        capability_name="create_directory",
+        parameter_extractor=lambda m, u, i: {
+            "path": m.group(1) or m.group(2),
+        },
+        priority=105,
+        description="Natural language folder creation",
+    ),
+
     # ── File operations ───────────────────────────────────────
     RoutingRule(
         name="read_file_direct",

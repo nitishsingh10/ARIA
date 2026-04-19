@@ -145,6 +145,8 @@ class Router:
             rule, params = rule_match
             # Verify capability exists in registry
             if rule.capability_name in self._registry:
+                # Add complete_parameters logic
+                params = self._complete_parameters(rule.capability_name, intent, params)
                 log.info(
                     f"[Router] {rule.capability_name} via rule (conf=0.95)",
                     data={"rule": rule.name, "params": params},
@@ -171,7 +173,7 @@ class Router:
 
         if len(candidates) == 1:
             cap = candidates[0]
-            params = self._map_intent_to_params(intent, cap)
+            params = self._complete_parameters(cap.name, intent, {})
             log.info(
                 f"[Router] {cap.name} via semantic (conf=0.80)",
                 data={"query": search_query},
@@ -198,7 +200,7 @@ class Router:
             alternatives = [c.name for c, _ in scored[1:4]]
 
             if top_score > 0.3:
-                params = self._map_intent_to_params(intent, top_cap)
+                params = self._complete_parameters(top_cap.name, intent, {})
                 conf = min(0.85, 0.6 + top_score)
                 log.info(
                     f"[Router] {top_cap.name} via semantic (conf={conf:.2f})",
@@ -222,6 +224,9 @@ class Router:
         try:
             llm_result = await self._llm_route(intent, candidates)
             if llm_result.capability_name:
+                llm_result.parameters = self._complete_parameters(
+                    llm_result.capability_name, intent, llm_result.parameters
+                )
                 log.info(
                     f"[Router] {llm_result.capability_name} via llm "
                     f"(conf={llm_result.confidence:.2f})",
@@ -372,72 +377,52 @@ class Router:
         return score
 
     # ------------------------------------------------------------------
-    # Parameter mapping
+    # Parameter completion
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _map_intent_to_params(
-        intent: Intent,
-        capability: Capability,
-    ) -> dict:
-        """Map intent entities/parameters to capability input fields.
+    def _complete_parameters(self, capability_name: str, intent: Intent, partial_params: dict) -> dict:
+        """Fill missing capability parameters securely from intent rules."""
+        capability = self._registry.get(capability_name)
+        if not capability:
+            return partial_params
 
-        Attempts to fill required fields from the intent's extracted
-        entities and parameters.
-
-        Args:
-            intent: The parsed intent.
-            capability: The selected capability.
-
-        Returns:
-            A parameter dict for the capability.
-        """
-        params = dict(intent.parameters)
-
-        # Get the capability's input schema fields
         try:
             schema = capability.input_schema.model_json_schema()
             properties = schema.get("properties", {})
-            required = schema.get("required", [])
+            required_fields = schema.get("required", [])
         except Exception:
-            return params
+            return partial_params
 
-        # Try to fill missing required fields from entities
-        for field_name in required:
-            if field_name in params:
-                continue
-
-            field_info = properties.get(field_name, {})
-            field_type = field_info.get("type", "string")
-
-            # Map common field names to entity types
-            if field_name in ("path", "file_path", "directory") and intent.entities:
-                # Find a path-like entity
-                for entity in intent.entities:
-                    if entity.startswith(("/", "~", ".")):
-                        params[field_name] = entity
-                        break
-
-            elif field_name in ("url",) and intent.entities:
-                for entity in intent.entities:
-                    if entity.startswith("http"):
-                        params[field_name] = entity
-                        break
-
-            elif field_name in ("code", "content", "text") and intent.entities:
-                # Use the first non-path entity
-                for entity in intent.entities:
-                    if not entity.startswith(("/", "~", ".", "http")):
-                        params[field_name] = entity
-                        break
-
-            elif field_name in ("command",) and intent.entities:
-                for entity in intent.entities:
-                    if not entity.startswith(("/", "~", "http")):
-                        params[field_name] = entity
-                        break
-
-        return params
+        for field in required_fields:
+            if field not in partial_params:
+                # Try to fill from intent
+                if field == "path":
+                    # Check parameters first
+                    if "path" in intent.parameters:
+                        partial_params["path"] = intent.parameters["path"]
+                    elif "name" in intent.parameters:
+                        partial_params["path"] = intent.parameters["name"]
+                    elif intent.entities:
+                        partial_params["path"] = intent.entities[0]
+                elif field == "content":
+                    if "content" in intent.parameters:
+                        partial_params["content"] = intent.parameters["content"]
+                    else:
+                        partial_params["content"] = ""  # default empty
+                elif field == "command":
+                    if intent.entities:
+                        partial_params["command"] = " ".join(intent.entities)
+                elif field == "url":
+                    urls = [e for e in intent.entities if e.startswith("http")]
+                    if urls:
+                        partial_params["url"] = urls[0]
+                elif field == "query":
+                    partial_params["query"] = intent.raw_text
+                elif field == "code":
+                    if "code" in intent.parameters:
+                        partial_params["code"] = intent.parameters["code"]
+                        
+        return partial_params
 
     # ------------------------------------------------------------------
     # JSON helper

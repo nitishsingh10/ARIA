@@ -122,6 +122,13 @@ class MemoryManager:
         Returns:
             The vector store document ID.
         """
+        # --- Problem 3: clean the intent prompt ---
+        import re
+        clean = re.sub(
+            r'^(remember|note that|save that|keep in mind that|dont forget that)\s+',
+            '', text, flags=re.IGNORECASE
+        ).strip()
+
         meta = metadata or {}
         meta["session_id"] = self.context.session_id
         meta["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -131,23 +138,23 @@ class MemoryManager:
             try:
                 if source == "document":
                     doc_id = await self.vector_store.add_document(
-                        text, source=meta.get("file_path", source), metadata=meta
+                        clean, source=meta.get("file_path", source), metadata=meta
                     )
                 elif source == "fact":
                     doc_id = await self.vector_store.add_fact(
-                        text,
+                        clean,
                         subject=meta.get("subject", "general"),
                         confidence=meta.get("confidence", 1.0),
                         source=source,
                     )
                 else:
-                    doc_id = await self.vector_store.add_conversation(text, meta)
+                    doc_id = await self.vector_store.add_conversation(clean, meta)
             except Exception as exc:
                 log.error("remember: vector store failed", data={"error": str(exc)})
 
-        # Also extract entities/relations from the text
+        # Also extract entities/relations from the clean text
         try:
-            extraction = self.knowledge.extract_and_store(text)
+            extraction = self.knowledge.extract_and_store(clean)
             if extraction["entities_added"] or extraction["relations_added"]:
                 log.debug("Knowledge extracted", data=extraction)
         except Exception as exc:
@@ -159,7 +166,7 @@ class MemoryManager:
     # recall — retrieve from memory
     # ------------------------------------------------------------------
 
-    async def recall(self, query: str, top_k: int = 5) -> RecallResult:
+    async def recall(self, query: str, top_k: int = 8) -> RecallResult:
         """Search all memory systems for relevant information.
 
         Queries the vector store (all collections) and the knowledge
@@ -208,53 +215,29 @@ class MemoryManager:
         return result
 
     async def recall_for_prompt(self, query: str) -> str:
-        """Generate a memory context string ready for system prompt injection.
-
-        Args:
-            query: The user's latest message.
-
-        Returns:
-            A formatted string like:
-            ``"Relevant memory:\\n- ...\\n\\nWhat I know about you:\\n- ..."``
-        """
-        result = await self.recall(query, top_k=3)
-
-        parts: List[str] = []
-
-        # Vector memories
-        all_memories: List[MemoryResult] = []
-        for memories in result.vector_results.values():
-            all_memories.extend(memories)
-        all_memories.sort(key=lambda m: m.score, reverse=True)
-
-        if all_memories:
-            lines = ["Relevant memory:"]
-            for mem in all_memories[:5]:
-                # Truncate long texts
-                text = mem.text[:200].replace("\n", " ")
-                lines.append(f"- [{mem.collection}] {text}")
-            parts.append("\n".join(lines))
-
-        # User profile
-        profile = self.knowledge.get_user_profile()
-        profile_lines: List[str] = []
-        if profile.get("name") and profile["name"] != "user":
-            profile_lines.append(f"User's name: {profile['name']}")
-        if profile.get("projects"):
-            profile_lines.append(f"Working on: {', '.join(profile['projects'])}")
-        if profile.get("tools"):
-            profile_lines.append(f"Uses: {', '.join(profile['tools'])}")
-        if profile.get("preferences"):
-            profile_lines.append(f"Prefers: {', '.join(profile['preferences'])}")
-        if profile.get("facts"):
-            for k, v in list(profile["facts"].items())[:5]:
-                if k != "role":
-                    profile_lines.append(f"{k}: {v}")
-
-        if profile_lines:
-            parts.append("What I know about you:\n" + "\n".join(f"- {l}" for l in profile_lines))
-
-        return "\n\n".join(parts) if parts else ""
+        """Generate a memory context string ready for system prompt injection."""
+        try:
+            result = await self.recall(query)
+            if not result.vector_results and not result.graph_entities:
+                return ""  # empty = don't inject into prompt
+            
+            lines = ["Relevant context from memory:"]
+            for collection, memories in result.vector_results.items():
+                for m in memories:
+                    if m.score > 0.4:
+                        lines.append(f"- {m.text[:150]}")
+            
+            profile = self.knowledge.get_user_profile()
+            if profile.get("name") and profile["name"] != "user":
+                lines.append(f"- User's name: {profile['name']}")
+            if profile.get("preferences"):
+                lines.append(f"- Preferences: {', '.join(profile['preferences'])}")
+            if profile.get("projects"):
+                lines.append(f"- Projects: {', '.join(profile['projects'])}")
+            
+            return "\n".join(lines) if len(lines) > 1 else ""
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------
     # Conversation tracking

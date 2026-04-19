@@ -312,21 +312,29 @@ async def _repl(
 
                     if cap_out.success:
                         data = cap_out.data
-                        if isinstance(data, dict):
+                        def format_output(d, indent=0):
                             lines = []
-                            for k, v in data.items():
-                                val_str = str(v)
-                                if len(val_str) > 500:
-                                    val_str = val_str[:500] + "…"
-                                lines.append(f"  {k}: {val_str}")
-                            reply = "\n".join(lines)
-                        elif isinstance(data, list):
-                            lines = [f"  • {item}" for item in data]
-                            reply = "\n".join(lines)
-                        elif data is None:
+                            if isinstance(d, dict):
+                                for key, val in d.items():
+                                    if isinstance(val, (dict, list)):
+                                        lines.append(f"{' '*indent}▪ {key}:")
+                                        lines.extend(format_output(val, indent+2))
+                                    else:
+                                        lines.append(f"{' '*indent}▪ {key}: {val}")
+                            elif isinstance(d, list):
+                                for item in d:
+                                    if isinstance(item, (dict, list)):
+                                        lines.extend(format_output(item, indent+2))
+                                    else:
+                                        lines.append(f"{' '*indent}• {item}")
+                            else:
+                                lines.append(f"{' '*indent}{d}")
+                            return lines
+                            
+                        if data is None:
                             reply = "Done."
                         else:
-                            reply = str(data)
+                            reply = "\n".join(format_output(data))
                     else:
                         reply = f"Error: {cap_out.error}"
 

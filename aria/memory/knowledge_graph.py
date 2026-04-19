@@ -103,6 +103,9 @@ _PROJECT_PATTERNS = [
 ]
 _ATTRIBUTE_PATTERNS = [
     (r"my\s+(\w+)\s+is\s+(.+?)(?:\.|,|$)", None, None),  # "my X is Y" → attribute
+    (r"i(?:'| a)m on\s+(macOS|mac|windows|linux|ubuntu)(?:\.|,|$)", "os", None),
+    (r"i(?:'| a)m\s+(?:a |an )?(developer|student|designer|engineer|researcher|manager|founder)(?:\.|,|$)", "role", None),
+    (r"i(?:'| a)m\s+(?!on|a |an |using|building|working|called)(.+?)(?:\.|,|$)", "status", None),
 ]
 
 
@@ -394,12 +397,17 @@ class KnowledgeGraph:
                 self.add_relation(self._user_id, pred, entity.id)
                 relations_added += 1
 
-        # --- Attribute detection: "my X is Y" ---
+        # --- Attribute detection: "my X is Y" and "I am X" ---
         _SKIP_ATTR_KEYS = {"name", "names"}
-        for pattern, _, _ in _ATTRIBUTE_PATTERNS:
+        for pattern, fixed_key, _ in _ATTRIBUTE_PATTERNS:
             for match in re.finditer(pattern, text_lower):
-                key = match.group(1).strip()
-                value = match.group(2).strip().rstrip(".")
+                if fixed_key:
+                    key = fixed_key
+                    value = match.group(1).strip().rstrip(".")
+                else:
+                    key = match.group(1).strip()
+                    value = match.group(2).strip().rstrip(".")
+                    
                 if key and value and len(key) < 30 and key not in _SKIP_ATTR_KEYS:
                     user = self.entities.get(self._user_id)
                     if user:

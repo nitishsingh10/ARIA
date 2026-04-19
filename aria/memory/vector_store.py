@@ -242,8 +242,8 @@ class VectorStore:
         self,
         query: str,
         collection: str = _CONVERSATIONS,
-        top_k: int = 5,
-        min_score: float = 0.3,
+        top_k: int = 8,
+        min_score: float = 0.2,
         metadata_filter: Optional[dict] = None,
     ) -> List[MemoryResult]:
         """Semantic search within a single collection.
@@ -288,7 +288,8 @@ class VectorStore:
     async def search_all(
         self,
         query: str,
-        top_k: int = 3,
+        top_k: int = 8,
+        min_score: float = 0.2,
     ) -> Dict[str, List[MemoryResult]]:
         """Search across all three collections.
 
@@ -302,7 +303,7 @@ class VectorStore:
         grouped: Dict[str, List[MemoryResult]] = {}
         for name in _ALL_COLLECTIONS:
             grouped[name] = await self.search(
-                query, collection=name, top_k=top_k
+                query, collection=name, top_k=top_k, min_score=min_score
             )
         return grouped
 
