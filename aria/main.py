@@ -31,7 +31,7 @@ from aria.llm.client import OllamaClient
 from aria.llm.prompts import ARIA_CHAT_PROMPT
 
 if TYPE_CHECKING:
-    from aria.config import Settings
+    from aria.config import AriaConfig
     from aria.cognitive import IntentParser, PromptBuilder, Router
     from aria.memory import MemoryManager
     from aria.planner import Planner, PlanExecutor
@@ -426,11 +426,11 @@ def _print_stats(memory: "MemoryManager") -> None:
 # ---------------------------------------------------------------------------
 
 
-def _init() -> "Settings":
+def _init() -> "AriaConfig":
     """Load settings and configure logging.
 
     Returns:
-        The validated Settings object.
+        The validated AriaConfig object.
     """
     settings = get_settings()
     setup_logging(

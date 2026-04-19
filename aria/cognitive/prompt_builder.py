@@ -23,6 +23,10 @@ from aria.config import AriaConfig
 from aria.core.logger import get_logger
 from aria.memory.memory_manager import MemoryManager
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from aria.cognitive.intent import Intent
+
 log = get_logger("cognitive.prompt_builder")
 
 
