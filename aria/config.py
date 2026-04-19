@@ -55,27 +55,6 @@ class LLMConfig(BaseModel):
     )
 
 
-class AriaConfig(BaseModel):
-    """Core ARIA runtime settings."""
-
-    name: str = Field(default="ARIA", description="Agent display name.")
-    version: str = Field(default="0.1.0", description="Agent version string.")
-    log_level: str = Field(
-        default="INFO",
-        description="Logging level: TRACE | DEBUG | INFO | WARNING | ERROR.",
-    )
-    log_format: Literal["json", "pretty"] = Field(
-        default="json",
-        description="Log output format: 'json' for structured, 'pretty' for dev.",
-    )
-    data_dir: str = Field(
-        default="~/.aria/data", description="Directory for persistent data."
-    )
-    memory_dir: str = Field(
-        default="~/.aria/memory", description="Directory for memory storage."
-    )
-
-
 class InterfacesConfig(BaseModel):
     """Feature flags for available ARIA interfaces."""
 
@@ -111,11 +90,26 @@ class IntegrationsConfig(BaseModel):
     telegram: TelegramIntegration = Field(default_factory=TelegramIntegration)
 
 
-class Settings(BaseModel):
-    """Top-level ARIA settings — the root config object."""
+class AriaConfig(BaseModel):
+    """Core ARIA runtime settings."""
 
+    name: str = Field(default="ARIA", description="Agent display name.")
+    version: str = Field(default="0.1.0", description="Agent version string.")
+    log_level: str = Field(
+        default="INFO",
+        description="Logging level: TRACE | DEBUG | INFO | WARNING | ERROR.",
+    )
+    log_format: Literal["json", "pretty"] = Field(
+        default="json",
+        description="Log output format: 'json' for structured, 'pretty' for dev.",
+    )
+    data_dir: str = Field(
+        default="~/.aria/data", description="Directory for persistent data."
+    )
+    memory_dir: str = Field(
+        default="~/.aria/memory", description="Directory for memory storage."
+    )
     llm: LLMConfig = Field(default_factory=LLMConfig)
-    aria: AriaConfig = Field(default_factory=AriaConfig)
     interfaces: InterfacesConfig = Field(default_factory=InterfacesConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
 
@@ -126,11 +120,7 @@ class Settings(BaseModel):
 
 
 def _find_config_file() -> Path | None:
-    """Locate the first existing config file from the search paths.
-
-    Returns:
-        The resolved Path to the config file, or None if not found.
-    """
+    """Locate the first existing config file from the search paths."""
     for candidate in _CONFIG_SEARCH_PATHS:
         resolved = candidate.expanduser().resolve()
         if resolved.is_file():
@@ -138,29 +128,24 @@ def _find_config_file() -> Path | None:
     return None
 
 
-def load_settings() -> Settings:
-    """Load and validate ARIA settings from YAML + env overrides.
-
-    Search order:
-        1. ./aria.yaml  (project-local)
-        2. ~/.aria/aria.yaml  (user-global)
-
-    Environment variable overrides (applied after YAML):
-        - OLLAMA_BASE_URL  → llm.base_url
-        - OLLAMA_MODEL     → llm.model
-        - ARIA_LOG_LEVEL   → aria.log_level
-
-    Returns:
-        A fully validated Settings instance.
-    """
+def load_settings() -> AriaConfig:
+    """Load and validate ARIA settings from YAML + env overrides."""
     config_path = _find_config_file()
     raw: dict = {}
 
     if config_path is not None:
         with open(config_path, "r", encoding="utf-8") as fh:
             raw = yaml.safe_load(fh) or {}
+            
+    # Process nested structs natively or fold them in if needed.
+    # Since the yaml structure previously had `aria:` nested block,
+    # we should flatten `aria:` -> root if it exists in the raw yaml.
+    if "aria" in raw and isinstance(raw["aria"], dict):
+        aria_data = raw.pop("aria")
+        for k, v in aria_data.items():
+            raw[k] = v
 
-    settings = Settings(**raw)
+    settings = AriaConfig(**raw)
 
     # --- env overrides ---
     if env_url := os.getenv("OLLAMA_BASE_URL"):
@@ -168,7 +153,7 @@ def load_settings() -> Settings:
     if env_model := os.getenv("OLLAMA_MODEL"):
         settings.llm.model = env_model
     if env_log := os.getenv("ARIA_LOG_LEVEL"):
-        settings.aria.log_level = env_log
+        settings.log_level = env_log
 
     return settings
 
@@ -176,15 +161,11 @@ def load_settings() -> Settings:
 # ---------------------------------------------------------------------------
 # Module-level singleton (lazy)
 # ---------------------------------------------------------------------------
-_settings: Settings | None = None
+_settings: AriaConfig | None = None
 
 
-def get_settings() -> Settings:
-    """Return the cached global Settings singleton, loading on first call.
-
-    Returns:
-        The global Settings instance.
-    """
+def get_settings() -> AriaConfig:
+    """Return the cached global Settings singleton, loading on first call."""
     global _settings
     if _settings is None:
         _settings = load_settings()

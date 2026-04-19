@@ -42,14 +42,14 @@ class OllamaClient:
         config: An ``LLMConfig`` instance with provider URL, model, etc.
     """
 
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: Any) -> None:
         """Initialise the client with the given LLM configuration.
 
         Args:
             config: Validated LLM settings (model, base_url, temperature …).
         """
-        self.config = config
-        self._base_url = config.base_url.rstrip("/")
+        self.config = config.llm if hasattr(config, "llm") else config
+        self._base_url = self.config.base_url.rstrip("/")
         self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------

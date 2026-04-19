@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from aria.config import Settings
     from aria.cognitive import IntentParser, PromptBuilder, Router
     from aria.memory import MemoryManager
+    from aria.planner import Planner, PlanExecutor
 
 # ---------------------------------------------------------------------------
 # Typer app
@@ -88,20 +89,23 @@ def run() -> None:
     # Initialise memory system
     from aria.memory import MemoryManager
 
-    memory = MemoryManager(settings.aria, client)
+    memory = MemoryManager(settings, client)
 
     # Initialise cognitive layer
     from aria.capabilities import GLOBAL_REGISTRY
     from aria.cognitive import IntentParser, PromptBuilder, Router
+    from aria.planner import Planner, PlanExecutor
 
-    intent_parser = IntentParser(settings.aria, client, memory)
-    router = Router(settings.aria, client, GLOBAL_REGISTRY, memory)
-    prompt_builder = PromptBuilder(settings.aria, memory, GLOBAL_REGISTRY)
+    intent_parser = IntentParser(settings, client, memory)
+    router = Router(settings, client, GLOBAL_REGISTRY, memory)
+    prompt_builder = PromptBuilder(settings, memory, GLOBAL_REGISTRY)
+    planner = Planner(settings, client, GLOBAL_REGISTRY, memory)
+    executor = PlanExecutor(settings, client, GLOBAL_REGISTRY, memory)
 
     # Show banner
     console.print(_BANNER, style="bold cyan")
     console.print(
-        f"  [bold green]v{settings.aria.version}[/bold green]  •  "
+        f"  [bold green]v{settings.version}[/bold green]  •  "
         f"model: [bold]{settings.llm.model}[/bold]  •  "
         f"provider: [bold]{settings.llm.provider}[/bold]  •  "
         f"capabilities: [bold]{len(GLOBAL_REGISTRY)}[/bold]\n"
@@ -114,7 +118,7 @@ def run() -> None:
 
     # Run the async REPL
     try:
-        asyncio.run(_repl(client, memory, intent_parser, router, prompt_builder))
+        asyncio.run(_repl(client, memory, intent_parser, router, prompt_builder, planner, executor))
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Goodbye! 👋[/bold yellow]")
 
@@ -177,7 +181,7 @@ def version() -> None:
     console.print(
         Panel(
             Text.from_markup(
-                f"[bold cyan]ARIA[/bold cyan]  v{settings.aria.version}\n"
+                f"[bold cyan]ARIA[/bold cyan]  v{settings.version}\n"
                 f"Python  {sys.version.split()[0]}\n"
                 f"Model   {settings.llm.model} @ {settings.llm.base_url}"
             ),
@@ -198,14 +202,17 @@ async def _repl(
     intent_parser: "IntentParser",
     router: "Router",
     prompt_builder: "PromptBuilder",
+    planner: "Planner",
+    executor: "PlanExecutor",
 ) -> None:
-    """Run the interactive REPL with cognitive routing.
+    """Run the interactive REPL with cognitive routing and planning.
 
     For each user input:
         1. Parse intent (fast rules → LLM fallback).
         2. Route to capability (rules → semantic → LLM).
-        3. Execute capability or handle as conversation.
-        4. Store the conversation turn in memory.
+        3. Plan execution (if multi-step required).
+        4. Execute capability/plan or handle as conversation.
+        5. Store the conversation turn in memory.
 
     Args:
         client: An initialised OllamaClient instance.
@@ -213,6 +220,8 @@ async def _repl(
         intent_parser: The IntentParser.
         router: The Router.
         prompt_builder: The PromptBuilder.
+        planner: The Planner.
+        executor: The PlanExecutor.
     """
     from aria.capabilities import GLOBAL_REGISTRY
 
@@ -240,6 +249,13 @@ async def _repl(
                 console.print(
                     f"[bold green]New session started:[/bold green] {new_id}\n"
                 )
+                continue
+            if stripped.lower() == "help":
+                from aria.capabilities import GLOBAL_REGISTRY
+                console.print("\n[bold cyan]Available Capabilities:[/bold cyan]")
+                for cap in GLOBAL_REGISTRY.search(""):
+                    console.print(f"  • [bold]{cap.name}[/bold]: {cap.description}")
+                console.print()
                 continue
 
             # --- Cognitive pipeline ---
@@ -271,32 +287,32 @@ async def _repl(
 
             # --- Step 3: Execute or chat ---
             try:
-                if result.routing_method == "memory":
-                    # Handle memory operations
-                    if intent.action == "remember":
-                        await memory.remember(stripped)
-                        reply = "Got it, I'll remember that."
-                    elif intent.action == "recall":
-                        recall_result = await memory.recall(stripped)
-                        reply = recall_result.formatted_summary
+                if intent.requires_planning or result.requires_planning:
+                    # Multi-step Plan Execution
+                    plan = await planner.create_plan(intent, result)
+                    console.print(f"\n[bold magenta]Plan generated[/bold magenta]\n{planner.explain_plan(plan)}\n")
+                    
+                    if plan.requires_confirmation:
+                        confirm = console.input("[bold yellow]This plan contains sensitive actions. Proceed? (y/n): [/bold yellow]")
+                        if confirm.lower() != 'y':
+                            reply = "Plan cancelled."
+                        else:
+                            with console.status("[bold cyan]Executing plan…[/bold cyan]", spinner="dots"):
+                                exec_r = await executor.execute(plan)
+                            reply = exec_r.summary()
                     else:
-                        reply = "Memory operation noted."
+                        with console.status("[bold cyan]Executing plan…[/bold cyan]", spinner="dots"):
+                            exec_r = await executor.execute(plan)
+                        reply = exec_r.summary()
 
                 elif result.capability_name:
-                    # Execute the capability
-                    with console.status(
-                        f"[bold cyan]Running {result.capability_name}…[/bold cyan]",
-                        spinner="dots",
-                    ):
-                        cap_output = await GLOBAL_REGISTRY.execute(
-                            result.capability_name, result.parameters
-                        )
+                    # Single capability execution
+                    with console.status(f"[bold cyan]Running {result.capability_name}…[/bold cyan]", spinner="dots"):
+                        cap_out = await GLOBAL_REGISTRY.execute(result.capability_name, result.parameters)
 
-                    if cap_output.success:
-                        # Format capability output
-                        data = cap_output.data
+                    if cap_out.success:
+                        data = cap_out.data
                         if isinstance(data, dict):
-                            # Pretty-print dict results
                             lines = []
                             for k, v in data.items():
                                 val_str = str(v)
@@ -304,35 +320,39 @@ async def _repl(
                                     val_str = val_str[:500] + "…"
                                 lines.append(f"  {k}: {val_str}")
                             reply = "\n".join(lines)
-                        elif isinstance(data, str):
-                            reply = data if len(data) < 2000 else data[:2000] + "…"
+                        elif isinstance(data, list):
+                            lines = [f"  • {item}" for item in data]
+                            reply = "\n".join(lines)
+                        elif data is None:
+                            reply = "Done."
                         else:
                             reply = str(data)
-
-                        reply = (
-                            f"[{result.capability_name}] "
-                            f"✓ ({cap_output.execution_time_ms:.0f}ms)\n{reply}"
-                        )
                     else:
-                        reply = (
-                            f"[{result.capability_name}] "
-                            f"✗ Error: {cap_output.error}"
-                        )
+                        reply = f"Error: {cap_out.error}"
+
+                elif result.routing_method == "memory":
+                    # Handle memory operations
+                    if intent.action == "remember":
+                        await memory.remember(stripped)
+                        reply = "Got it, I'll remember that."
+                    else:
+                        recall = await memory.recall_for_prompt(stripped)  # Will use memory.recall() wrapper later.
+                        # Wait, memory.recall gives MemoryResult, recall_for_prompt gives str
+                        recall_res = await memory.recall(stripped)
+                        reply = recall_res.formatted_summary or "No relevant memories found."
+
                 else:
-                    # Conversation: use LLM with memory context
-                    with console.status(
-                        "[bold cyan]ARIA thinking…[/bold cyan]", spinner="dots"
-                    ):
-                        system_prompt = await prompt_builder.build_chat_prompt(
-                            stripped, include_memory=True
-                        )
+                    # Conversation fallback
+                    with console.status("[bold cyan]ARIA thinking…[/bold cyan]", spinner="dots"):
+                        sys_prompt = await prompt_builder.build_chat_prompt(stripped)
                         messages = memory.get_context_for_llm(last_n=10)
                         messages.append({"role": "user", "content": stripped})
-                        reply = await client.chat(messages, system=system_prompt)
+                        response = await client.chat(messages=messages, system=sys_prompt)
+                        reply = response
 
             except Exception as exc:
                 log.error("Execution failed", data={"error": str(exc)})
-                reply = f"Error during execution: {exc}"
+                reply = f"Error: {exc}"
 
             console.print(f"\n[bold green]ARIA ❯[/bold green] {reply}\n")
 
@@ -385,6 +405,10 @@ def _print_stats(memory: "MemoryManager") -> None:
     table.add_row("Session", "duration (s)", str(ctx.get("duration_seconds", 0)))
     table.add_row("Session", "session_id", ctx.get("session_id", "")[:12] + "…")
 
+    # Capabilities
+    from aria.capabilities import GLOBAL_REGISTRY
+    table.add_row("Registry", "capabilities", str(len(GLOBAL_REGISTRY.search(""))))
+
     console.print(table)
     console.print()
 
@@ -402,8 +426,8 @@ def _init() -> "Settings":
     """
     settings = get_settings()
     setup_logging(
-        level=settings.aria.log_level,
-        fmt=settings.aria.log_format,
+        level=settings.log_level,
+        fmt=settings.log_format,
     )
     return settings
 
