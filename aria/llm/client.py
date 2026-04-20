@@ -144,6 +144,7 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         system: str | None = None,
+        model: str | None = None,
     ) -> str:
         """Send a chat completion request to Ollama.
 
@@ -154,7 +155,7 @@ class OllamaClient:
         Returns:
             The assistant's reply as a plain string.
         """
-        payload = self._build_chat_payload(messages, system, stream=False)
+        payload = self._build_chat_payload(messages, system, stream=False, model=model)
 
         start = time.perf_counter()
         resp = await self._request_with_retry("POST", "/api/chat", json_body=payload)
@@ -179,6 +180,7 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         system: str | None = None,
+        model: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream a chat completion token-by-token from Ollama.
 
@@ -189,7 +191,7 @@ class OllamaClient:
         Yields:
             Individual text chunks as they arrive.
         """
-        payload = self._build_chat_payload(messages, system, stream=True)
+        payload = self._build_chat_payload(messages, system, stream=True, model=model)
 
         start = time.perf_counter()
         resp = await self._request_with_retry(
@@ -290,6 +292,7 @@ class OllamaClient:
         system: str | None,
         *,
         stream: bool,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Assemble the JSON payload for the /api/chat endpoint.
 
@@ -306,8 +309,9 @@ class OllamaClient:
             all_messages.append({"role": "system", "content": system})
         all_messages.extend(messages)
 
+        target_model = model or self.config.model
         return {
-            "model": self.config.model,
+            "model": target_model,
             "messages": all_messages,
             "stream": stream,
             "options": {

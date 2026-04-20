@@ -39,7 +39,8 @@ class LLMConfig(BaseModel):
     """Configuration for the LLM provider (Ollama)."""
 
     provider: str = Field(default="ollama", description="LLM provider name.")
-    model: str = Field(default="llama3", description="Model identifier to use.")
+    model: str = Field(default="gemma4:latest", description="Model identifier to use for heavy reasoning.")
+    fast_model: str = Field(default="gemma:2b", description="Model identifier to use for latency-sensitive tasks like routing.")
     base_url: str = Field(
         default="http://localhost:11434",
         description="Base URL for the Ollama REST API.",

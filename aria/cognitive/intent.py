@@ -401,23 +401,30 @@ class IntentParser:
         system_prompt = (
             "You are an intent parser. Extract structured intent from user input.\n"
             "Return ONLY valid JSON, no explanation, no markdown.\n\n"
+            "CRITICAL RULES:\n"
+            "1. If the user is just saying hello, asking a question, making a joke, or chatting abstractly, YOU MUST set 'action': 'chat' and 'intent_type': 'conversation'.\n"
+            "2. Do NOT hallucinate capabilities. Only use specific actions if the user clearly commands an operation.\n\n"
             "Available actions: read, write, run, search, fetch, summarize, "
             "delete, list, create, move, explain, remember, recall, chat\n\n"
             "Return this exact JSON structure:\n"
             "{\n"
-            '  "action": "one of the actions above",\n'
+            '  "action": "one of the actions above (use chat if ambiguous)",\n'
             '  "entities": ["list of paths, URLs, or key nouns"],\n'
             '  "parameters": {},\n'
             '  "complexity": "simple or multi_step or complex",\n'
             '  "requires_planning": false,\n'
-            '  "intent_type": "capability or conversation or memory or system_command",\n'
+            '  "intent_type": "capability or conversation or memory",\n'
             '  "confidence": 0.85\n'
             "}"
         )
 
         messages = [{"role": "user", "content": user_input}]
 
-        raw_response = await self._ollama.chat(messages, system=system_prompt)
+        raw_response = await self._ollama.chat(
+            messages, 
+            system=system_prompt,
+            model=getattr(self._config.llm, "fast_model", self._config.llm.model)
+        )
 
         intent = Intent(raw_text=user_input, raw_llm_response=raw_response)
 

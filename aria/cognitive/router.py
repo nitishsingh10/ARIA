@@ -298,7 +298,11 @@ class Router:
         )
 
         messages = [{"role": "user", "content": user_msg}]
-        raw = await self._ollama.chat(messages, system=system_prompt)
+        raw = await self._ollama.chat(
+            messages, 
+            system=system_prompt,
+            model=getattr(self._config.llm, "fast_model", self._config.llm.model)
+        )
 
         # Parse JSON response
         parsed = self._extract_json(raw)
