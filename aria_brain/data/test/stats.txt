@@ -1,0 +1,48 @@
+==================================================
+ARIA Router Training Dataset — Statistics
+==================================================
+
+Total examples:       3340
+Conversation %:       12.2%
+Memory %:             6.5%
+
+─── By Difficulty ───
+  easy        : 1403
+  medium      : 697
+  hard        : 1240
+
+─── By Source ───
+  template       : 492
+  llm_generated  : 0
+  augmented      : 2848
+
+─── By Capability ───
+  append_file                   : 120
+  conversation                  : 407
+  copy_file                     : 120
+  create_directory              : 120
+  delete_directory              : 120
+  delete_file                   : 120
+  fetch_url                     : 120
+  file_info                     : 120
+  folder_tree                   : 120
+  get_current_time              : 120
+  get_env_var                   : 120
+  get_process                   : 120
+  get_system_info               : 120
+  kill_process                  : 120
+  list_directory                : 120
+  list_processes                : 120
+  memory                        : 217
+  move_file                     : 120
+  multi_step                    : 76
+  read_file                     : 120
+  run_command                   : 120
+  run_in_docker                 : 120
+  run_python                    : 120
+  search_files                  : 120
+  write_file                    : 120
+
+Version:              1.0
+Created:              2026-04-26T04:53:25.348524+00:00
+==================================================
